@@ -43,7 +43,9 @@ func main() {
 
 	// 6. Config
 	cfg := agent.Config{
-		AllowedAdmins: []string{"admin"}, // Пользователь консоли по умолчанию
+		AllowedAdmins: []tool.AdminUser{
+			{Transport: "console", UserID: "admin"},
+		}, // Пользователь консоли по умолчанию
 	}
 
 	// 7. Core

@@ -15,7 +15,7 @@ const defaultSysPrompt = "Вы - умный AI-Агент. Ваш код сос�
 
 // Config holds the configuration for the Agent.
 type Config struct {
-	AllowedAdmins []string
+	AllowedAdmins []tool.AdminUser
 }
 
 // Agent is the core framework struct managing the lifecycle.
@@ -122,7 +122,7 @@ func (a *Agent) ProcessMessage(ctx context.Context, msg transport.Message) error
 
 		// Execute tools
 		for _, tc := range resp.ToolCalls {
-			toolResult, err := a.toolReg.Execute(ctx, tc.Name, msg.UserID, tc.Args)
+			toolResult, err := a.toolReg.Execute(ctx, tc.Name, msg.TransportName, msg.UserID, tc.Args)
 			if err != nil {
 				toolResult = fmt.Sprintf("Error: %v", err)
 			}

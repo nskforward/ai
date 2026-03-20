@@ -23,7 +23,7 @@ func (t *ReadFileTool) Schema() string {
 }
 func (t *ReadFileTool) RequiresAdmin() bool { return false }
 
-func (t *ReadFileTool) Execute(ctx context.Context, userID string, args string) (string, error) {
+func (t *ReadFileTool) Execute(ctx context.Context, transportName string, userID string, args string) (string, error) {
 	var input struct {
 		Path string `json:"path"`
 	}
@@ -58,7 +58,7 @@ func (t *SaveSkillTool) Schema() string {
 // Writing new core skills requires admin invocation of the agent session.
 func (t *SaveSkillTool) RequiresAdmin() bool { return true }
 
-func (t *SaveSkillTool) Execute(ctx context.Context, userID string, args string) (string, error) {
+func (t *SaveSkillTool) Execute(ctx context.Context, transportName string, userID string, args string) (string, error) {
 	var input struct {
 		Filename string `json:"filename"`
 		Content  string `json:"content"`

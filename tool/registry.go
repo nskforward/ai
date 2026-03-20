@@ -8,6 +8,12 @@ import (
 var ErrToolNotFound = errors.New("tool not found")
 var ErrAdminRequired = errors.New("permission denied: this tool requires admin access")
 
+// AdminUser defines a privileged user for a specific transport.
+type AdminUser struct {
+	Transport string
+	UserID    string
+}
+
 // Registry manages available tools and validates execution rights (ACL).
 type Registry struct {
 	tools  map[string]Tool
@@ -15,10 +21,11 @@ type Registry struct {
 }
 
 // NewRegistry creates a new tool registry and registers the list of admin IDs.
-func NewRegistry(admins []string) *Registry {
+func NewRegistry(admins []AdminUser) *Registry {
 	adminMap := make(map[string]bool)
 	for _, a := range admins {
-		adminMap[a] = true
+		key := a.Transport + ":" + a.UserID
+		adminMap[key] = true
 	}
 	return &Registry{
 		tools:  make(map[string]Tool),
@@ -40,16 +47,19 @@ func (r *Registry) GetTools() []Tool {
 	return list
 }
 
-// Execute looks up a tool by name, checks ACL against userID, and runs it.
-func (r *Registry) Execute(ctx context.Context, name string, userID string, args string) (string, error) {
+// Execute looks up a tool by name, checks ACL against transport+userID, and runs it.
+func (r *Registry) Execute(ctx context.Context, name string, transportName string, userID string, args string) (string, error) {
 	t, ok := r.tools[name]
 	if !ok {
 		return "", ErrToolNotFound
 	}
 
-	if t.RequiresAdmin() && !r.admins[userID] {
-		return "", ErrAdminRequired
+	if t.RequiresAdmin() {
+		key := transportName + ":" + userID
+		if !r.admins[key] {
+			return "", ErrAdminRequired
+		}
 	}
 
-	return t.Execute(ctx, userID, args)
+	return t.Execute(ctx, transportName, userID, args)
 }

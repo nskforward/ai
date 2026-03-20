@@ -19,6 +19,8 @@ func NewConsole() *Console {
 	}
 }
 
+func (c *Console) Name() string { return "console" }
+
 func (c *Console) Read() (Message, error) {
 	fmt.Print("User> ")
 	if !c.scanner.Scan() {
@@ -27,9 +29,10 @@ func (c *Console) Read() (Message, error) {
 	text := strings.TrimSpace(c.scanner.Text())
 	
 	return Message{
-		SessionID: "cli-session",
-		UserID:    "admin", // Console user is admin by default
-		Text:      text,
+		SessionID:     "cli-session",
+		UserID:        "admin", // Console user is admin by default
+		TransportName: c.Name(),
+		Text:          text,
 	}, nil
 }
 
