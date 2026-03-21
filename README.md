@@ -19,9 +19,9 @@
 
 ### 1. Подготовка
 
-Убедитесь, что вы скачали зависимость для транспорта Telegram:
+Добавьте фреймворк и все его зависимости в ваш проект:
 ```bash
-go get github.com/go-telegram-bot-api/telegram-bot-api/v5
+go get github.com/nskforward/ai
 ```
 
 Экспортируйте обязательные переменные окружения:
@@ -29,13 +29,14 @@ go get github.com/go-telegram-bot-api/telegram-bot-api/v5
 # Токен бота, полученный у @BotFather в Telegram
 export TELEGRAM_BOT_TOKEN="ВАШ_TELEGRAM_ТОКЕН"
 
-# Ключ авторизации GigaChat (base64 строка ClientId:ClientSecret)
-export GIGACHAT_AUTH_KEY="ВАШ_GIGACHAT_КЛЮЧ"
+# Учетные данные GigaChat (из личного кабинета)
+export GIGACHAT_CLIENT_ID="ВАШ_CLIENT_ID"
+export GIGACHAT_CLIENT_SECRET="ВАШ_CLIENT_SECRET"
 ```
 
 ### 2. Код `main.go`
 
-Минимальный самодостаточный пример сборки агента:
+Минимальный самодостаточный пример сборки агента с подробными комментариями:
 
 ```go
 package main
@@ -55,41 +56,56 @@ import (
 
 func main() {
 	// 1. Хранилище памяти и Песочница
+	// LocalFS сохраняет Markdown-файлы навыков (решённых задач) прямо на диске
 	store, _ := storage.NewLocalFS("agent_data")
+	
+	// FSSandbox запрещает агенту (LLM) выходить за пределы указанных директорий
+	// В данном случае мы разрешаем чтение и запись только в папку "skills"
 	fsSandbox := sandbox.NewFSSandbox([]string{"skills"})
 
-	// 2. Драйвер ввода/вывода (Telegram bBot)
+	// 2. Драйвер ввода/вывода (Transport)
+	// Создаем Telegram Transport для работы в формате бота. 
+	// Он сам настроит long polling и маршрутизацию сообщений.
 	tg, err := transport.NewTelegram(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	if err != nil {
 		log.Fatalf("Ошибка Telegram: %v", err)
 	}
 
 	// 3. Провайдер LLM (Sber GigaChat)
-	// Insecure: true используется для обхода проверки сертификатов Минцифры на локальных машинах.
-	authKey := os.Getenv("GIGACHAT_AUTH_KEY")
+	// Для GigaChat мы передаём ClientID и ClientSecret; провайдер сам 
+	// сгенерирует Base64-токен и будет управлять циклами его обновления (OAuth).
+	// DisableSSLVerify: true отключает проверку сертификатов Минцифры,
+	// которых по умолчанию нет в системе на Windows/macOS.
 	provider := gigachat.NewProvider(gigachat.Config{
-		AuthKey:  authKey,
-		Model:    "GigaChat", 
-		Insecure: true,       
+		ClientID:         os.Getenv("GIGACHAT_CLIENT_ID"),
+		ClientSecret:     os.Getenv("GIGACHAT_CLIENT_SECRET"),
+		Model:            "GigaChat", 
+		DisableSSLVerify: true,       
 	})
 
-	// 4. Инструменты (чтение файлов памяти и запись нового опыта)
+	// 4. Инструменты (Tools)
+	// Предоставляем агенту список того, что он умеет делать физически:
+	// - Вспоминать: чтение ранее сохраненных навыков
+	// - Изучать: сохранение нового опыта успешного решения задачи в память
 	tools := []tool.Tool{
 		&tool.ReadFileTool{Store: store, Sandbox: fsSandbox},
-		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox}, // Требует Admin права для использования
+		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox}, // Требует Admin права
 	}
 
 	// 5. Конфигурация Агента
+	// Сборка всех компонентов воедино
 	cfg := agent.Config{
-		Transport:  tg,             // Транспорт
-		Storage:    store,          // Файловая система
-		LightModel: provider,       // Модель для планирования и triage
-		HeavyModel: provider,       // Модель для исполнения сложных задач
-		Tools:      tools,          // Список доступных инструментов
-		MaxSteps:   10,             // Защита от бесконечного цикла ReAct
+		Transport:  tg,             // Как общаемся (Telegram)
+		Storage:    store,          // Как храним файлы (FS)
+		LightModel: provider,       // Дешёвая модель (для планирования / роутинга)
+		HeavyModel: provider,       // Дорогая модель (для выполнения сложных задач)
+		Tools:      tools,          // Чем пользуемся
+		MaxSteps:   10,             // Предохранитель от бесконечного цикла мыслей
 	}
 
 	// 6. Запуск оркестратора
+	// Инициализируем агента и блокируем горутину функцией Start, которая
+	// будет слушать Telegram и обрабатывать запросы пользователей.
 	myAgent := agent.New(cfg)
 	log.Println("Бот запущен. Ожидаю сообщения в Telegram...")
 	

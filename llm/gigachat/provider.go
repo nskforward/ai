@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,10 +21,12 @@ import (
 
 // Config holds GigaChat-specific settings.
 type Config struct {
-	AuthKey  string // Base64 encoded ClientID:ClientSecret
-	Scope    string // GIGACHAT_API_PERS, GIGACHAT_API_B2B or GIGACHAT_API_CORP
-	Model    string // e.g., "GigaChat", "GigaChat-Pro"
-	Insecure bool   // Skip TLS cert verification (useful for Mintsifra certs)
+	ClientID         string // GigaChat Client ID
+	ClientSecret     string // GigaChat Client Secret
+	AuthKey          string // Optional: Pre-encoded Base64. If empty, derived from ClientID:ClientSecret
+	Scope            string // GIGACHAT_API_PERS, GIGACHAT_API_B2B or GIGACHAT_API_CORP
+	Model            string // e.g., "GigaChat", "GigaChat-Pro"
+	DisableSSLVerify bool   // Set to true to bypass TLS verification (useful for Mintsifra certs)
 }
 
 // Provider implements llm.Provider for GigaChat API.
@@ -44,8 +47,12 @@ func NewProvider(cfg Config) *Provider {
 		cfg.Model = "GigaChat"
 	}
 
+	if cfg.AuthKey == "" && cfg.ClientID != "" && cfg.ClientSecret != "" {
+		cfg.AuthKey = base64.StdEncoding.EncodeToString([]byte(cfg.ClientID + ":" + cfg.ClientSecret))
+	}
+
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	if cfg.Insecure {
+	if cfg.DisableSSLVerify {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
