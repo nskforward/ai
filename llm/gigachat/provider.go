@@ -221,10 +221,10 @@ func (p *Provider) Generate(ctx context.Context, history []llm.Message, tools []
 				Parameters:  schema,
 			})
 			
-			// Force the model to call it by modifying the prompt
+			// Force the model to call it by adding to the first system message, or as a user message at the end
 			reqBody.Messages = append(reqBody.Messages, apiMessage{
-				Role: "system",
-				Content: "You must use the function 'return_structured_result' to output your final answer.",
+				Role: "user",
+				Content: "PLEASE REMEMBER: You must use the function 'return_structured_result' to output your final answer formatted as requested.",
 			})
 		}
 	}

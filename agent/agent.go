@@ -180,9 +180,13 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 	availableTools := a.toolReg.GetTools()
 
 	// 2.5 Planning Phase (Orchestrator)
-	planPrompt := append(history, llm.Message{
-		Role: llm.RoleSystem,
-		Content: "Оцени задачу пользователя. Если она простая — верни is_complex: false. Если сложная — верни is_complex: true и распиши шаги (steps).",
+	// Create a temporary prompt for planning, ensuring system message is first.
+	// The planning instruction is added as a user message to avoid multiple system messages.
+	planPrompt := make([]llm.Message, len(history))
+	copy(planPrompt, history)
+	planPrompt = append(planPrompt, llm.Message{
+		Role:    llm.RoleUser,
+		Content: "[ИНСТРУКЦИЯ ОРКЕСТРАТОРА]: Оцени задачу пользователя. Если она простая — верни is_complex: false. Если сложная — верни is_complex: true и распиши шаги (steps).",
 	})
 
 	a.log.Debug("orchestrator: requesting plan")
@@ -220,9 +224,10 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 			}
 
 			// Inject aggregated context into the main history so Heavy model can finalize it
+			// Using RoleUser instead of RoleSystem to not violate strict role ordering
 			history = append(history, llm.Message{
-				Role: llm.RoleSystem,
-				Content: fmt.Sprintf("Субагенты выполнили задачу. Их результаты:\n%s\nСформируй финальный ответ пользователю на основе этих результатов.", aggregatedContext),
+				Role: llm.RoleUser,
+				Content: fmt.Sprintf("[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Субагенты выполнили задачу. Их результаты:\n%s\nСформируй финальный ответ пользователю на основе этих результатов.", aggregatedContext),
 			})
 		}
 	}
