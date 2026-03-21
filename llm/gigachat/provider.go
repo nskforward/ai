@@ -126,6 +126,7 @@ type apiMessage struct {
 	Role         string          `json:"role"`
 	Content      string          `json:"content"`
 	FunctionCall *apiFuncCall    `json:"function_call,omitempty"`
+	Name         string          `json:"name,omitempty"` // Required for role="function"
 }
 
 type apiFuncCall struct {
@@ -162,7 +163,7 @@ func (p *Provider) Generate(ctx context.Context, history []llm.Message, tools []
 	}
 
 	// 1. Map messages
-	for _, historyMsg := range history {
+	for i, historyMsg := range history {
 		role := string(historyMsg.Role)
 		
 		msg := apiMessage{
@@ -170,15 +171,27 @@ func (p *Provider) Generate(ctx context.Context, history []llm.Message, tools []
 			Content: historyMsg.Content,
 		}
 
-		// If it's a tool output, GigaChat uses role 'function'
+		// If it's a tool output, GigaChat strictly requires role="function" and name.
 		if historyMsg.Role == llm.RoleTool {
 			msg.Role = "function"
-			// In GigaChat, for role=function, the name of the function must also be sent sometimes.
-			// The content is the result. Let's stick to standard map.
-			// Actually, name might be required, but we'll try sending content.
-			// If not supported natively, we inject it as a user message.
-			msg.Role = "user" 
-			msg.Content = fmt.Sprintf("[Результат выполнения инструмента (id=%s)]: %s", historyMsg.ToolCallID, historyMsg.Content)
+			// Find the function name from the previous assistant message by ToolCallID
+			for j := i - 1; j >= 0; j-- {
+				if history[j].Role == llm.RoleAssistant {
+					for _, tc := range history[j].ToolCalls {
+						if tc.ID == historyMsg.ToolCallID {
+							msg.Name = tc.Name
+							break
+						}
+					}
+					if msg.Name != "" {
+						break
+					}
+				}
+			}
+			// Fallback just in case
+			if msg.Name == "" {
+				msg.Name = "unknown_function" 
+			}
 		}
 
 		// If it was an assistant message that called a tool previously
