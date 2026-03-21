@@ -17,27 +17,29 @@ type ReadFileTool struct {
 }
 
 func (t *ReadFileTool) Name() string { return "read_file" }
-func (t *ReadFileTool) Description() string { return "Reads the content of a file. Use this to read files from the skills/ folder listed in the TOC." }
+func (t *ReadFileTool) Description() string { return "Reads the content of a file. Use this to read skills listed in the TOC." }
 func (t *ReadFileTool) Schema() string {
-	return `{"type":"object","properties":{"path":{"type":"string","description":"Relative path to the file, e.g. skills/how_to_deploy.md"}},"required":["path"]}`
+	return `{"type":"object","properties":{"filename":{"type":"string","description":"Exact filename from the TOC, e.g. deploy_to_aws.md"}},"required":["filename"]}`
 }
 func (t *ReadFileTool) RequiresAdmin() bool { return false }
 
 func (t *ReadFileTool) Execute(ctx context.Context, transportName string, userID string, args string) (string, error) {
 	var input struct {
-		Path string `json:"path"`
+		Filename string `json:"filename"`
 	}
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		return "", err
 	}
 
+	path := filepath.Join("skills", input.Filename)
+
 	if t.Sandbox != nil {
-		if err := t.Sandbox.CheckRead(input.Path); err != nil {
+		if err := t.Sandbox.CheckRead(path); err != nil {
 			return "", err
 		}
 	}
 
-	data, err := t.Store.Read(input.Path)
+	data, err := t.Store.Read(path)
 	if err != nil {
 		return "", err
 	}

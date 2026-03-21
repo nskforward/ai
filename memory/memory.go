@@ -30,7 +30,7 @@ func (m *Manager) GenerateTOC() (string, error) {
 	}
 
 	var builder strings.Builder
-	builder.WriteString("Доступный опыт и навыки (папка skills):\n")
+	builder.WriteString("Доступный опыт и навыки (список filename для read_file):\n")
 
 	for _, f := range files {
 		if strings.HasSuffix(f, ".md") {
