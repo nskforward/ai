@@ -75,15 +75,25 @@ func main() {
 		log.Fatalf("Ошибка Telegram: %v", err)
 	}
 
-	// 3. Провайдер LLM (Sber GigaChat)
+	// 3. Провайдеры LLM (Sber GigaChat)
 	// Для GigaChat мы передаём ClientID и ClientSecret; провайдер сам 
 	// сгенерирует Base64-токен и будет управлять циклами его обновления (OAuth).
 	// DisableSSLVerify: true отключает проверку сертификатов Минцифры,
 	// которых по умолчанию нет в системе на Windows/macOS.
-	provider := gigachat.NewProvider(gigachat.Config{
+	
+	// В качестве "легкой" модели для быстрых решений используем GigaChat-2
+	lightProvider := gigachat.NewProvider(gigachat.Config{
 		ClientID:         os.Getenv("GIGACHAT_CLIENT_ID"),
 		ClientSecret:     os.Getenv("GIGACHAT_CLIENT_SECRET"),
-		Model:            "GigaChat", 
+		Model:            "GigaChat-2", 
+		DisableSSLVerify: true,       
+	})
+
+	// В качестве "тяжелой" модели для сложной генерации кода используем GigaChat-2-Max
+	heavyProvider := gigachat.NewProvider(gigachat.Config{
+		ClientID:         os.Getenv("GIGACHAT_CLIENT_ID"),
+		ClientSecret:     os.Getenv("GIGACHAT_CLIENT_SECRET"),
+		Model:            "GigaChat-2-Max", 
 		DisableSSLVerify: true,       
 	})
 
@@ -110,8 +120,8 @@ func main() {
 	cfg := agent.Config{
 		Transport:  tg,             // Как общаемся (Telegram)
 		Storage:    store,          // Как храним файлы (FS)
-		LightModel: provider,       // Дешёвая модель (для планирования / роутинга)
-		HeavyModel: provider,       // Дорогая модель (для выполнения сложных задач)
+		LightModel: lightProvider,  // Дешёвая модель (для планирования / роутинга)
+		HeavyModel: heavyProvider,  // Дорогая модель (для выполнения сложных задач)
 		Tools:      tools,          // Список доступных инструментов
 		AllowedAdmins: []tool.AdminUser{
 			{Transport: "telegram", UserID: adminID}, // Белый список
