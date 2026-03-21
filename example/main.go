@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/signal"
+	"syscall"
 
 	"github.com/nskforward/ai/agent"
 	"github.com/nskforward/ai/llm"
@@ -22,15 +24,15 @@ func main() {
 		log.Fatalf("Ошибка создания хранилища: %v", err)
 	}
 
-	// Создаем тестовую инструкцию для генерации Оглавления (TOC)
-	_ = store.Write("skills/how_to_hello.md", []byte("Шаг 1: Скажи привет."))
+	// Seed a sample skill for TOC
+	_ = store.Write("skills/how_to_hello.md", []byte("# Приветствие\nШаг 1: Скажи привет.\nШаг 2: Спроси как дела."))
 
 	// 2. Transport
 	console := transport.NewConsole()
 
-	// 3. Providers (Mock)
-	light := &llm.MockProvider{Name: "Light-Model"}
-	heavy := &llm.MockProvider{Name: "Heavy-Model"}
+	// 3. LLM Providers (Mock)
+	light := &llm.MockProvider{Name: "Light"}
+	heavy := &llm.MockProvider{Name: "Heavy"}
 
 	// 4. Sandbox
 	fsSandbox := sandbox.NewFSSandbox([]string{"skills"})
@@ -41,20 +43,38 @@ func main() {
 		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox},
 	}
 
-	// 6. Config
+	// 6. Example middleware: log every message
+	logMiddleware := func(ctx context.Context, msg transport.Message, next agent.Handler) error {
+		fmt.Printf("[middleware] Получено сообщение от %s:%s\n", msg.TransportName, msg.UserID)
+		return next(ctx, msg)
+	}
+
+	// 7. Config
 	cfg := agent.Config{
+		Transport:  console,
+		Storage:    store,
+		LightModel: light,
+		HeavyModel: heavy,
+		Tools:      tools,
 		AllowedAdmins: []tool.AdminUser{
 			{Transport: "console", UserID: "admin"},
-		}, // Пользователь консоли по умолчанию
+		},
+		Middlewares:      []agent.Middleware{logMiddleware},
+		EnableReflection: false, // set true to enable self-check
+		MaxSteps:         10,
 	}
 
-	// 7. Core
-	myAgent := agent.New(cfg, console, store, light, heavy, tools)
+	myAgent := agent.New(cfg)
 
-	fmt.Println("Агент готов. Для проверки можете написать 'test read' или 'test save'. Нажмите Ctrl+C для выхода.")
+	// Graceful shutdown via SIGINT/SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	ctx := context.Background()
-	if err := myAgent.Start(ctx); err != nil {
+	fmt.Println("Агент готов. Команды: 'test read', 'test save'. Ctrl+C для выхода.")
+
+	if err := myAgent.Start(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("Критическая ошибка: %v", err)
 	}
+
+	fmt.Println("Агент остановлен.")
 }

@@ -14,6 +14,6 @@ type Transport interface {
 	Name() string
 	// Read blocks until a new message is received.
 	Read() (Message, error)
-	// Write sends a response back to the user via the given session ID.
-	Write(sessionID string, text string) error
+	// Write sends a response back to the user (using the context of the passed Message).
+	Write(msg Message) error
 }

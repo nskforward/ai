@@ -12,7 +12,7 @@ type MockProvider struct {
 	Name string
 }
 
-func (m *MockProvider) Generate(ctx context.Context, history []Message, tools []tool.Tool) (Message, error) {
+func (m *MockProvider) Generate(ctx context.Context, history []Message, tools []tool.Tool, opts *GenerateOptions) (Message, error) {
 	lastMsg := history[len(history)-1]
 
 	// Simulate tool usage
@@ -28,7 +28,7 @@ func (m *MockProvider) Generate(ctx context.Context, history []Message, tools []
 			},
 		}, nil
 	}
-	
+
 	if lastMsg.Role == RoleUser && lastMsg.Content == "test save" {
 		return Message{
 			Role: RoleAssistant,

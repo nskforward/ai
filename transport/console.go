@@ -36,7 +36,7 @@ func (c *Console) Read() (Message, error) {
 	}, nil
 }
 
-func (c *Console) Write(sessionID string, text string) error {
-	fmt.Printf("Agent> %s\n", text)
+func (c *Console) Write(msg Message) error {
+	fmt.Printf("Agent> %s\n", msg.Text)
 	return nil
 }
