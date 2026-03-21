@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/nskforward/ai/tool"
 )
@@ -14,6 +15,26 @@ type MockProvider struct {
 
 func (m *MockProvider) Generate(ctx context.Context, history []Message, tools []tool.Tool, opts *GenerateOptions) (Message, error) {
 	lastMsg := history[len(history)-1]
+	
+	// If the last message is from the system asking for a plan, look at the previous user message
+	userText := lastMsg.Content
+	if lastMsg.Role == RoleSystem && len(history) >= 2 {
+		userText = history[len(history)-2].Content
+	}
+
+	// Structured output JSON mocking
+	if opts != nil && opts.ResponseFormat != "" {
+		if strings.Contains(userText, "complex") {
+			return Message{
+				Role: RoleAssistant,
+				Content: `{"is_complex": true, "reasoning": "Test complex task", "steps": [{"id": 1, "description": "do step 1"}, {"id": 2, "description": "do step 2"}]}`,
+			}, nil
+		}
+		return Message{
+			Role: RoleAssistant,
+			Content: `{"is_complex": false, "reasoning": "Simple task", "steps": []}`,
+		}, nil
+	}
 
 	// Simulate tool usage
 	if lastMsg.Role == RoleUser && lastMsg.Content == "test read" {

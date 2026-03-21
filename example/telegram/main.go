@@ -18,7 +18,12 @@ import (
 )
 
 func main() {
-	fmt.Println("Инициализация AI Агента...")
+	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if token == "" {
+		log.Fatal("Требуется переменная окружения TELEGRAM_BOT_TOKEN")
+	}
+
+	fmt.Println("Инициализация Telegram AI Агента...")
 
 	// 1. Storage
 	store, err := storage.NewLocalFS("agent_data")
@@ -26,11 +31,11 @@ func main() {
 		log.Fatalf("Ошибка создания хранилища: %v", err)
 	}
 
-	// Seed a sample skill for TOC
-	_ = store.Write("skills/how_to_hello.md", []byte("# Приветствие\nШаг 1: Скажи привет.\nШаг 2: Спроси как дела."))
-
-	// 2. Transport
-	console := transport.NewConsole()
+	// 2. Transport (Telegram)
+	tg, err := transport.NewTelegram(token)
+	if err != nil {
+		log.Fatalf("Ошибка Telegram: %v", err)
+	}
 
 	// 3. LLM Providers
 	var light, heavy llm.Provider
@@ -55,7 +60,7 @@ func main() {
 			Insecure: true,
 		})
 	} else {
-		fmt.Println("Используются Mock-модели. Задайте GIGACHAT_AUTH_KEY для реального API.")
+		fmt.Println("Используются Mock-модели (для разработки без ключей). Задайте GIGACHAT_AUTH_KEY для реального API.")
 		light = &llm.MockProvider{Name: "Light"}
 		heavy = &llm.MockProvider{Name: "Heavy"}
 	}
@@ -69,24 +74,25 @@ func main() {
 		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox},
 	}
 
-	// 6. Example middleware: log every message
-	logMiddleware := func(ctx context.Context, msg transport.Message, next agent.Handler) error {
-		fmt.Printf("[middleware] Получено сообщение от %s:%s\n", msg.TransportName, msg.UserID)
-		return next(ctx, msg)
+	// Пример настройки администратора по Telegram UserID
+	// Укажите свой ID вместо 12345678, чтобы получить права на запись
+	adminID := os.Getenv("TELEGRAM_ADMIN_ID")
+	if adminID == "" {
+		fmt.Println("Внимание: TELEGRAM_ADMIN_ID не задан. Никто не сможет сохранять системные навыки.")
+		adminID = "000000"
 	}
 
-	// 7. Config
+	// 6. Config
 	cfg := agent.Config{
-		Transport:  console,
+		Transport:  tg,
 		Storage:    store,
 		LightModel: light,
 		HeavyModel: heavy,
 		Tools:      tools,
 		AllowedAdmins: []tool.AdminUser{
-			{Transport: "console", UserID: "admin"},
+			{Transport: "telegram", UserID: adminID},
 		},
-		Middlewares:      []agent.Middleware{logMiddleware},
-		EnableReflection: false, // set true to enable self-check
+		EnableReflection: false,
 		MaxSteps:         10,
 	}
 
@@ -96,7 +102,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	fmt.Println("Агент готов. Команды: 'test read', 'test save', 'test complex'. Ctrl+C для выхода.")
+	fmt.Println("Агент запущен и ожидает сообщений в Telegram. Нажмите Ctrl+C для выхода.")
 
 	if err := myAgent.Start(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("Критическая ошибка: %v", err)

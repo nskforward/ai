@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -178,7 +179,55 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 
 	availableTools := a.toolReg.GetTools()
 
-	// 3. ReAct loop
+	// 2.5 Planning Phase (Orchestrator)
+	planPrompt := append(history, llm.Message{
+		Role: llm.RoleSystem,
+		Content: "Оцени задачу пользователя. Если она простая — верни is_complex: false. Если сложная — верни is_complex: true и распиши шаги (steps).",
+	})
+
+	a.log.Debug("orchestrator: requesting plan")
+	planMsg, err := a.config.LightModel.Generate(ctx, planPrompt, nil, &llm.GenerateOptions{ResponseFormat: PlanSchema})
+	if err != nil {
+		a.log.Error("planning phase error", "error", err)
+	}
+
+	var plan Plan
+	if err == nil {
+		if err := json.Unmarshal([]byte(planMsg.Content), &plan); err == nil && plan.IsComplex {
+			a.log.Info("orchestrator: complex task detected, spinning up subagents", "reasoning", plan.Reasoning, "steps", len(plan.Steps))
+			
+			subAgent := &SubAgent{
+				provider: a.config.HeavyModel, // Heavy model used for deep thinking in subagents
+				tools:    a.toolReg,
+				maxSteps: a.config.MaxSteps,
+				log:      a.log,
+			}
+
+			var aggregatedContext string
+			
+			// Sequential execution of sub-agents
+			for _, step := range plan.Steps {
+				a.log.Info("executing step", "id", step.ID, "desc", step.Description)
+				
+				res, err := subAgent.Execute(ctx, step.Description, aggregatedContext, msg.TransportName, msg.UserID)
+				if err != nil {
+					a.log.Error("subagent failed", "step", step.ID, "error", err)
+					aggregatedContext += fmt.Sprintf("\nШаг %d ошибка: %v\n", step.ID, err)
+				} else {
+					a.log.Debug("subagent completed", "step", step.ID)
+					aggregatedContext += fmt.Sprintf("\nШаг %d результат:\n%s\n", step.ID, res)
+				}
+			}
+
+			// Inject aggregated context into the main history so Heavy model can finalize it
+			history = append(history, llm.Message{
+				Role: llm.RoleSystem,
+				Content: fmt.Sprintf("Субагенты выполнили задачу. Их результаты:\n%s\nСформируй финальный ответ пользователю на основе этих результатов.", aggregatedContext),
+			})
+		}
+	}
+
+	// 3. ReAct loop (Either for simple task directly, or finalizing the complex task)
 	var finalResponse string
 	for step := 0; step < a.config.MaxSteps; step++ {
 		// Dual Model Routing: Light for step 0, Heavy afterward
