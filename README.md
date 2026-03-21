@@ -32,6 +32,10 @@ export TELEGRAM_BOT_TOKEN="ВАШ_TELEGRAM_ТОКЕН"
 # Учетные данные GigaChat (из личного кабинета)
 export GIGACHAT_CLIENT_ID="ВАШ_CLIENT_ID"
 export GIGACHAT_CLIENT_SECRET="ВАШ_CLIENT_SECRET"
+
+# Опционально: Ваш User ID в Telegram (через @userinfobot),
+# нужен для выдачи админ-прав (разрешает агенту сохранять опыт).
+export TELEGRAM_ADMIN_ID="123456789"
 ```
 
 ### 2. Код `main.go`
@@ -86,24 +90,36 @@ func main() {
 	// 4. Инструменты (Tools)
 	// Предоставляем агенту список того, что он умеет делать физически:
 	// - Вспоминать: чтение ранее сохраненных навыков
-	// - Изучать: сохранение нового опыта успешного решения задачи в память
+	// - Изучать: сохранение нового опыта успешного решения задачи в память.
+	// Инструмент SaveSkillTool внутри себя возвращает RequiresAdmin() == true, 
+	// поэтому его смогут вызвать только пользователи из белого списка.
 	tools := []tool.Tool{
 		&tool.ReadFileTool{Store: store, Sandbox: fsSandbox},
-		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox}, // Требует Admin права
+		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox}, 
 	}
 
-	// 5. Конфигурация Агента
+	// 5. Права доступа (ACL / Admins)
+	// Связываем идентификатор пользователя ("UserID" из Telegram) с транспортом.
+	adminID := os.Getenv("TELEGRAM_ADMIN_ID")
+	if adminID == "" {
+		log.Println("Внимание: TELEGRAM_ADMIN_ID не задан. Инструменты администратора (SaveSkillTool) недоступны.")
+	}
+
+	// 6. Конфигурация Агента
 	// Сборка всех компонентов воедино
 	cfg := agent.Config{
 		Transport:  tg,             // Как общаемся (Telegram)
 		Storage:    store,          // Как храним файлы (FS)
 		LightModel: provider,       // Дешёвая модель (для планирования / роутинга)
 		HeavyModel: provider,       // Дорогая модель (для выполнения сложных задач)
-		Tools:      tools,          // Чем пользуемся
+		Tools:      tools,          // Список доступных инструментов
+		AllowedAdmins: []tool.AdminUser{
+			{Transport: "telegram", UserID: adminID}, // Белый список
+		},
 		MaxSteps:   10,             // Предохранитель от бесконечного цикла мыслей
 	}
 
-	// 6. Запуск оркестратора
+	// 7. Запуск оркестратора
 	// Инициализируем агента и блокируем горутину функцией Start, которая
 	// будет слушать Telegram и обрабатывать запросы пользователей.
 	myAgent := agent.New(cfg)
