@@ -2,15 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 
+	"github.com/joho/godotenv"
 	"github.com/nskforward/ai/agent"
-	"github.com/nskforward/ai/llm"
 	"github.com/nskforward/ai/llm/gigachat"
+	"github.com/nskforward/ai/logger"
 	"github.com/nskforward/ai/sandbox"
 	"github.com/nskforward/ai/storage"
 	"github.com/nskforward/ai/tool"
@@ -18,89 +16,74 @@ import (
 )
 
 func main() {
-	fmt.Println("Инициализация AI Агента...")
-
-	// 1. Storage
-	store, err := storage.NewLocalFS("agent_data")
-	if err != nil {
-		log.Fatalf("Ошибка создания хранилища: %v", err)
+	// Подгружаем переменные окружения из файла .env (он должен лежать рядом либо в корне)
+	if err := godotenv.Load(".env"); err != nil {
+		log.Println("Файл .env не найден. Будут использованы системные переменные окружения.")
 	}
 
-	// Seed a sample skill for TOC
-	_ = store.Write("skills/how_to_hello.md", []byte("# Приветствие\nШаг 1: Скажи привет.\nШаг 2: Спроси как дела."))
+	// 1. Хранилище памяти и Песочница
+	// LocalFS сохраняет Markdown-файлы навыков непосредственно в эту директорию.
+	store, _ := storage.NewLocalFS("agent_data")
 
-	// 2. Transport
-	console := transport.NewConsole()
-
-	// 3. LLM Providers
-	var light, heavy llm.Provider
-	
-	if authKey := os.Getenv("GIGACHAT_AUTH_KEY"); authKey != "" {
-		fmt.Println("Используется реальная модель GigaChat")
-		
-		model := os.Getenv("GIGACHAT_MODEL")
-		if model == "" {
-			model = "GigaChat-2"
-		}
-		
-		light = gigachat.NewProvider(gigachat.Config{
-			AuthKey:          authKey,
-			Model:            "GigaChat-2",       // For planning
-			DisableSSLVerify: true,             // Bypass TLS for Mintsifra
-		})
-		
-		heavy = gigachat.NewProvider(gigachat.Config{
-			AuthKey:          authKey,
-			Model:            model,            // For execution
-			DisableSSLVerify: true,
-		})
-	} else {
-		fmt.Println("Используются Mock-модели. Задайте GIGACHAT_AUTH_KEY для реального API.")
-		light = &llm.MockProvider{Name: "Light"}
-		heavy = &llm.MockProvider{Name: "Heavy"}
-	}
-
-	// 4. Sandbox
+	// FSSandbox запрещает агенту (LLM) случайное или умышленное чтение/запись вне 'skills'
 	fsSandbox := sandbox.NewFSSandbox([]string{"skills"})
 
-	// 5. Tools
+	// 2. Драйвер ввода/вывода (Transport)
+	tg, err := transport.NewTelegram(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	if err != nil {
+		log.Fatalf("Ошибка Telegram: %v", err)
+	}
+
+	// 3. Провайдеры LLM (Sber GigaChat)
+	// Для GigaChat мы передаём Authorization Key; провайдер сам автообновляет Access Token'ы.
+	// DisableSSLVerify: true используется для обхода проверки сертификатов Минцифры.
+	lightProvider := gigachat.NewProvider(gigachat.Config{
+		AuthKey:          os.Getenv("GIGACHAT_AUTH_KEY"),
+		Model:            "GigaChat-2", // Дешёвая и быстрая модель для планирования
+		DisableSSLVerify: true,
+	})
+
+	heavyProvider := gigachat.NewProvider(gigachat.Config{
+		AuthKey:          os.Getenv("GIGACHAT_AUTH_KEY"),
+		Model:            "GigaChat-2-Pro", // Дорогая умная модель для реализации
+		DisableSSLVerify: true,
+	})
+
+	// 4. Инструменты (Tools)
+	// Доступ агента к физическому миру (чтение опыта, запись навыков с подтверждением, доступ в интернет с одобрением)
 	tools := []tool.Tool{
 		&tool.ReadFileTool{Store: store, Sandbox: fsSandbox},
-		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox},
+		&tool.SaveSkillTool{Store: store, Sandbox: fsSandbox}, // Требует !allow_save
+		&tool.HttpGetTool{Whitelist: store},                   // Требует !approve <URL>
 	}
 
-	// 6. Example middleware: log every message
-	logMiddleware := func(ctx context.Context, msg transport.Message, next agent.Handler) error {
-		fmt.Printf("[middleware] Получено сообщение от %s:%s\n", msg.TransportName, msg.UserID)
-		return next(ctx, msg)
+	// 5. Права доступа (ACL / Admins)
+	// Разрешаем сохранять навыки только конкретному администратору Telegram.
+	adminID := os.Getenv("TELEGRAM_ADMIN_ID")
+	if adminID == "" || adminID == "12345678" || adminID == "ВАШ_ID" {
+		log.Println("Внимание: TELEGRAM_ADMIN_ID не задан или недействителен. Инструменты администратора (SaveSkillTool) недоступны.")
 	}
 
-	// 7. Config
+	// 6. Конфигурация Агента
+	// Добавим расширенное логирование уровня Debug, чтобы видеть скрытые мысли и аргументы инструментов
 	cfg := agent.Config{
-		Transport:  console,
+		Transport:  tg,
 		Storage:    store,
-		LightModel: light,
-		HeavyModel: heavy,
+		LightModel: lightProvider,
+		HeavyModel: heavyProvider,
 		Tools:      tools,
+		Logger:     logger.NewSlogDebug(), // Подробнейшие логи в консоль
 		AllowedAdmins: []tool.AdminUser{
-			{Transport: "console", UserID: "admin"},
+			{Transport: "telegram", UserID: adminID},
 		},
-		Middlewares:      []agent.Middleware{logMiddleware},
-		EnableReflection: false, // set true to enable self-check
-		MaxSteps:         10,
+		MaxSteps: 10,
 	}
 
+	// 7. Запуск оркестратора
 	myAgent := agent.New(cfg)
+	log.Println("Все зависимости запущены. Ожидаю сообщения в Telegram...")
 
-	// Graceful shutdown via SIGINT/SIGTERM
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	fmt.Println("Агент готов. Команды: 'test read', 'test save', 'test complex'. Ctrl+C для выхода.")
-
-	if err := myAgent.Start(ctx); err != nil && ctx.Err() == nil {
-		log.Fatalf("Критическая ошибка: %v", err)
+	if err := myAgent.Start(context.Background()); err != nil {
+		log.Fatalf("Работа агента прервана: %v", err)
 	}
-
-	fmt.Println("Агент остановлен.")
 }

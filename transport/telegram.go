@@ -69,3 +69,14 @@ func (t *Telegram) Write(msg Message) error {
 
 	return nil
 }
+
+func (t *Telegram) SendTyping(sessionID string) error {
+	chatID, err := strconv.ParseInt(sessionID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid chat ID format: %w", err)
+	}
+
+	action := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+	_, err = t.bot.Request(action)
+	return err
+}

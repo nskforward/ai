@@ -17,6 +17,7 @@ func (m *mockStorage) List(dir string) ([]string, error) {
 	}
 	return nil, nil
 }
+func (m *mockStorage) Delete(path string) error { return nil }
 
 func TestMemoryTOC(t *testing.T) {
 	mgr := memory.NewManager(&mockStorage{})

@@ -59,3 +59,7 @@ func (l *LocalFS) List(dir string) ([]string, error) {
 	}
 	return files, nil
 }
+func (l *LocalFS) Delete(path string) error {
+	fullPath := l.resolve(path)
+	return os.Remove(fullPath)
+}

@@ -40,3 +40,7 @@ func (c *Console) Write(msg Message) error {
 	fmt.Printf("Agent> %s\n", msg.Text)
 	return nil
 }
+
+func (c *Console) SendTyping(sessionID string) error {
+	return nil
+}

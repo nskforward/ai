@@ -1,6 +1,9 @@
 package logger
 
-import "log/slog"
+import (
+	"log/slog"
+	"os"
+)
 
 // SlogLogger wraps the standard library slog as the default Logger.
 type SlogLogger struct {
@@ -10,6 +13,12 @@ type SlogLogger struct {
 // NewSlog creates a logger backed by slog.
 func NewSlog() *SlogLogger {
 	return &SlogLogger{log: slog.Default()}
+}
+
+// NewSlogDebug creates a logger explicitly set to Debug level.
+func NewSlogDebug() *SlogLogger {
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	return &SlogLogger{log: slog.New(slog.NewTextHandler(os.Stdout, opts))}
 }
 
 func (s *SlogLogger) Info(msg string, args ...any)  { s.log.Info(msg, args...) }

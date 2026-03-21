@@ -2,8 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/nskforward/ai/llm"
@@ -15,9 +19,18 @@ import (
 	"github.com/nskforward/ai/transport"
 )
 
-const defaultSysPrompt = `Вы — AI-Агент. Перед выполнением задачи проверьте Оглавление памяти ниже.
-Если есть подходящий навык — прочитайте файл через read_file.
-Если задача сложная и незнакомая — составьте план, выполните его, затем сохраните опыт через save_skill.`
+const defaultSysPrompt = `Вы — специализированный AI-Агент. Ваши возможности СТРОГО ограничены списком инструментов и Оглавлением памяти (навыками).
+Ваше Оглавление памяти приведено прямо в ЭТОМ системном сообщении ниже.
+Если в Оглавлении памяти нет навыка для решения задачи — СТРОГО ЗАПРЕЩЕНО придумывать (галлюцинировать) URL-адреса или API-ключи.
+
+ИЗВЕСТНЫЕ ШАБЛОНЫ API:
+- Яндекс.Погода: Требует заголовок "X-Yandex-API-Key" с вашим ключом. НЕ передавайте ключ в параметрах URL.
+
+КРИТИЧЕСКИЕ ПРАВИЛА:
+1. Если выполнение инструмента (любого) вернуло ошибку "ACCESS DENIED", вы ДОЛЖНЫ сообщить об этом пользователю и запросить разрешение. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО врать о том, что всё получилось.
+2. При сохранении навыка (save_skill), он ДОЛЖЕН содержать работающий КОД и URL. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сохранять свои планы или просто текст как навык.
+3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать пользователю свои внутренние планы, шаги или "оркестратора". Пользователь должен видеть только конечный результат.
+4. Соблюдай краткость. После успешного вызова инструмента просто подтверди результат.`
 
 // Handler is a function that processes a message.
 type Handler func(ctx context.Context, msg transport.Message) error
@@ -123,6 +136,7 @@ func (a *Agent) Start(ctx context.Context) error {
 			"transport", msg.TransportName,
 			"user", msg.UserID,
 		)
+		a.log.Debug("user prompt", "text", msg.Text)
 
 		// Build middleware chain
 		handler := a.processMessage
@@ -134,6 +148,11 @@ func (a *Agent) Start(ctx context.Context) error {
 			}
 		}
 
+		if err := a.handleCommand(ctx, msg); err == nil {
+			// Command was handled, skip LLM processing for this message
+			continue
+		}
+
 		if err := handler(ctx, msg); err != nil {
 			a.log.Error("processing error", "error", err, "session", msg.SessionID)
 			errMsg := msg
@@ -141,6 +160,174 @@ func (a *Agent) Start(ctx context.Context) error {
 			_ = a.config.Transport.Write(errMsg)
 		}
 	}
+}
+
+// tryAutoApprove checks if the current message is an affirmative response to a previous request.
+func (a *Agent) tryAutoApprove(ctx context.Context, msg transport.Message, history []llm.Message) {
+	text := strings.ToLower(strings.TrimSpace(msg.Text))
+	affirmative := []string{
+		"ок", "ok", "да", "yes", "хорошо", "разрешаю", "одобряю", "вперед", "действуй", "согласен", "agree",
+		"allow", "approve", "allow_save", "разрешить", "разрешаю", "можно", "давай",
+	}
+	
+	isAffirmative := false
+	for _, word := range affirmative {
+		if text == word || strings.HasPrefix(text, word+" ") || strings.HasPrefix(text, word+"!") || strings.HasPrefix(text, word+".") {
+			isAffirmative = true
+			break
+		}
+	}
+
+	if !isAffirmative {
+		return
+	}
+
+	// Look for the most recent assistant message that looks like a permission request
+	var lastRequest string
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == llm.RoleAssistant {
+			content := strings.ToLower(history[i].Content)
+			if strings.Contains(content, "адресу") || strings.Contains(content, "навык") || strings.Contains(content, "save_skill") {
+				lastRequest = history[i].Content
+				break
+			}
+		}
+	}
+
+	if lastRequest == "" {
+		return
+	}
+
+	// 1. Check for Path approval (only if the assistant asked for an address)
+	if strings.Contains(strings.ToLower(lastRequest), "адресу") {
+		// Extract potential HOST/PATH from the message
+		words := strings.Fields(lastRequest)
+		for _, word := range words {
+			word = strings.Trim(word, ".,\"'()<>")
+			if strings.Contains(word, ".") && !strings.Contains(word, "навык") {
+				// Try to parse as URL to clean it up (remove query params if any)
+				authString := word
+				if u, err := url.Parse(word); err == nil && u.Host != "" {
+					authString = u.Host + u.Path
+				} else if strings.Contains(word, "/") {
+					authString = strings.Split(word, "?")[0]
+				}
+				
+				hash := sha256.Sum256([]byte(authString))
+				pathKey := hex.EncodeToString(hash[:])
+
+				// Determine permission type from user response
+				isPersistent := strings.Contains(text, "белый список") || strings.Contains(text, "whitelist") || strings.Contains(text, "всегда") || strings.Contains(text, "always")
+				isDomain := strings.Contains(text, "домен") || strings.Contains(text, "domain") || strings.Contains(text, "хост") || strings.Contains(text, "host")
+
+				if isDomain {
+					host := authString
+					if idx := strings.Index(authString, "/"); idx != -1 {
+						host = authString[:idx]
+					}
+					h := sha256.Sum256([]byte(host))
+					hostKey := hex.EncodeToString(h[:])
+					_ = a.config.Storage.Write("approved_urls/hosts/"+hostKey, []byte("approved"))
+					a.log.Info("contextual Host persistent approval granted", "host", host, "session", msg.SessionID)
+				} else if isPersistent {
+					_ = a.config.Storage.Write("approved_urls/paths/"+pathKey, []byte("approved"))
+					a.log.Info("contextual Path persistent approval granted", "path", authString, "session", msg.SessionID)
+				} else {
+					// Default: ONE-TIME session permission
+					_ = a.config.Storage.Write("permissions/"+msg.SessionID+"/urls/"+pathKey, []byte("granted"))
+					a.log.Info("contextual Path ONE-TIME permission granted", "path", authString, "session", msg.SessionID)
+				}
+			}
+		}
+	}
+
+	// 2. Check for Skill save approval (broad match for any skill mentions)
+	lowerReq := strings.ToLower(lastRequest)
+	if strings.Contains(lowerReq, "навык") || strings.Contains(lowerReq, "save_skill") {
+		_ = a.config.Storage.Write("permissions/"+msg.SessionID+"/save_skill", []byte("granted"))
+		a.log.Info("contextual save permission granted", "session", msg.SessionID)
+	}
+}
+
+// handleCommand checks for special commands starting with ! and executes them if authorized.
+func (a *Agent) handleCommand(ctx context.Context, msg transport.Message) error {
+	trimmed := strings.TrimSpace(msg.Text)
+	if !strings.HasPrefix(trimmed, "!") {
+		return fmt.Errorf("not a command")
+	}
+
+	// Permission grants are handled and then allowed to continue to LLM ReAct loop
+	parts := strings.Fields(trimmed)
+	cmd := parts[0]
+
+	switch cmd {
+	case "!approve", "!allow_save":
+		if !a.isAdmin(msg) {
+			_ = a.config.Transport.Write(transport.Message{
+				SessionID:     msg.SessionID,
+				TransportName: msg.TransportName,
+				UserID:        msg.UserID,
+				Text:          "Ошибка: у вас нет прав администратора для этой команды.",
+			})
+			return fmt.Errorf("unauthorized")
+		}
+		if cmd == "!allow_save" {
+			_ = a.config.Storage.Write("permissions/"+msg.SessionID+"/save_skill", []byte("granted"))
+			a.log.Info("explicit save permission granted via command", "session", msg.SessionID)
+		} else {
+			if len(parts) < 2 {
+				_ = a.config.Transport.Write(transport.Message{
+					SessionID:     msg.SessionID,
+					TransportName: msg.TransportName,
+					UserID:        msg.UserID,
+					Text:          "Использование: !approve <URL>",
+				})
+				return fmt.Errorf("invalid arguments")
+			}
+			url := parts[1]
+			hash := sha256.Sum256([]byte(url))
+			key := hex.EncodeToString(hash[:])
+			_ = a.config.Storage.Write("approved_urls/"+key, []byte("approved"))
+			a.log.Info("explicit URL approval via command", "url", url)
+		}
+		// Return nil to indicate we handled the permission, but let Agent.Start continue to processMessage
+		return nil
+	}
+
+	// Other commands might still want to break execution (standard behavior)
+	return a.handleStandardCommand(ctx, msg)
+}
+
+func (a *Agent) isAdmin(msg transport.Message) bool {
+	for _, admin := range a.config.AllowedAdmins {
+		if admin.Transport == msg.TransportName && admin.UserID == msg.UserID {
+			return true
+		}
+	}
+	return false
+}
+
+// handleStandardCommand handles non-permission commands and returns an error to signal execution break.
+func (a *Agent) handleStandardCommand(ctx context.Context, msg transport.Message) error {
+	trimmed := strings.TrimSpace(msg.Text)
+	parts := strings.Fields(trimmed)
+	cmd := parts[0]
+
+	// Check if sender is admin for all commands
+	if !a.isAdmin(msg) {
+		return a.config.Transport.Write(transport.Message{
+			SessionID:     msg.SessionID,
+			TransportName: msg.TransportName,
+			UserID:        msg.UserID,
+			Text:          "Ошибка: У вас нет прав администратора для выполнения этой команды.",
+		})
+	}
+
+	switch cmd {
+	// Add other commands here if needed
+	}
+
+	return fmt.Errorf("unknown command")
 }
 
 // processMessage handles a single request with Dual-Model routing, session memory, and reflection.
@@ -164,6 +351,27 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 		return fmt.Errorf("session load: %w", err)
 	}
 
+	// Try auto-approve from natural language before continuing
+	a.tryAutoApprove(ctx, msg, history)
+
+	// Start typing indicator in background until execution finishes
+	typingCtx, cancelTyping := context.WithCancel(ctx)
+	defer cancelTyping()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		// Send initial indicator
+		_ = a.config.Transport.SendTyping(msg.SessionID)
+		for {
+			select {
+			case <-typingCtx.Done():
+				return
+			case <-ticker.C:
+				_ = a.config.Transport.SendTyping(msg.SessionID)
+			}
+		}
+	}()
+
 	if len(history) == 0 {
 		// New session — inject system prompt
 		history = []llm.Message{
@@ -177,6 +385,9 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 	// Append user message
 	history = append(history, llm.Message{Role: llm.RoleUser, Content: msg.Text})
 
+	// Inject sessionID into context for tools (like SaveSkillTool)
+	ctx = context.WithValue(ctx, "sessionID", msg.SessionID)
+
 	availableTools := a.toolReg.GetTools()
 
 	// 2.5 Planning Phase (Orchestrator)
@@ -186,7 +397,7 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 	copy(planPrompt, history)
 	planPrompt = append(planPrompt, llm.Message{
 		Role:    llm.RoleUser,
-		Content: "[ИНСТРУКЦИЯ ОРКЕСТРАТОРА]: Оцени задачу пользователя. Если она простая — верни is_complex: false. Если сложная — верни is_complex: true и распиши шаги (steps).",
+		Content: "[ИНСТРУКЦИЯ ОРКЕСТРАТОРА]: Проверь историю и 'ОГЛАВЛЕНИЕ ПАМЯТИ'. \n1. Если в запросе есть URL, ПЕРВЫМ ШАГОМ плана поставь 'использовать http_get для чтения documentation [URL]'.\n2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО изменять URL-адреса. Копируй их из запроса пользователя СИМВОЛ В СИМВОЛ.\n3. Шаги ДОЛЖНЫ содержать названия инструментов: 'использовать save_skill для...', 'использовать http_get для...'.\n4. БУДЬ СТРОГ: если в ОГЛАВЛЕНИИ лежит просто описание без кода — считай, что навыка НЕТ.",
 	})
 
 	a.log.Debug("orchestrator: requesting plan")
@@ -197,38 +408,50 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 
 	var plan Plan
 	if err == nil {
-		if err := json.Unmarshal([]byte(planMsg.Content), &plan); err == nil && plan.IsComplex {
-			a.log.Info("orchestrator: complex task detected, spinning up subagents", "reasoning", plan.Reasoning, "steps", len(plan.Steps))
-			
-			subAgent := &SubAgent{
-				provider: a.config.HeavyModel, // Heavy model used for deep thinking in subagents
-				tools:    a.toolReg,
-				maxSteps: a.config.MaxSteps,
-				log:      a.log,
-			}
-
-			var aggregatedContext string
-			
-			// Sequential execution of sub-agents
-			for _, step := range plan.Steps {
-				a.log.Info("executing step", "id", step.ID, "desc", step.Description)
+		a.log.Debug("orchestrator: received raw plan", "content", planMsg.Content)
+		if err := json.Unmarshal([]byte(planMsg.Content), &plan); err == nil {
+			if plan.IsComplex {
+				a.log.Info("orchestrator: complex task detected, spinning up subagents", "reasoning", plan.Reasoning, "steps", len(plan.Steps))
 				
-				res, err := subAgent.Execute(ctx, step.Description, aggregatedContext, msg.TransportName, msg.UserID)
-				if err != nil {
-					a.log.Error("subagent failed", "step", step.ID, "error", err)
-					aggregatedContext += fmt.Sprintf("\nШаг %d ошибка: %v\n", step.ID, err)
-				} else {
-					a.log.Debug("subagent completed", "step", step.ID)
-					aggregatedContext += fmt.Sprintf("\nШаг %d результат:\n%s\n", step.ID, res)
+				subAgent := &SubAgent{
+					provider: a.config.HeavyModel, // Heavy model used for deep thinking in subagents
+					tools:    a.toolReg,
+					maxSteps: a.config.MaxSteps,
+					log:      a.log,
 				}
-			}
 
-			// Inject aggregated context into the main history so Heavy model can finalize it
-			// Using RoleUser instead of RoleSystem to not violate strict role ordering
-			history = append(history, llm.Message{
-				Role: llm.RoleUser,
-				Content: fmt.Sprintf("[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Субагенты выполнили задачу. Их результаты:\n%s\nСформируй финальный ответ пользователю на основе этих результатов.", aggregatedContext),
-			})
+				var aggregatedContext string
+				
+				// Sequential execution of sub-agents
+				for _, step := range plan.Steps {
+					a.log.Info("executing step", "id", step.ID, "desc", step.Description)
+					
+					res, err := subAgent.Execute(ctx, step.Description, aggregatedContext, msg.TransportName, msg.UserID)
+					if err != nil {
+						a.log.Error("subagent failed", "step", step.ID, "error", err)
+						aggregatedContext += fmt.Sprintf("\nШаг %d ошибка: %v\n", step.ID, err)
+					} else {
+						a.log.Debug("subagent completed", "step", step.ID, "raw_result", res)
+						aggregatedContext += fmt.Sprintf("\nШаг %d результат:\n%s\n", step.ID, res)
+					}
+				}
+
+				// Analyze results for failures or ACCESS DENIED
+				hasError := strings.Contains(strings.ToUpper(aggregatedContext), "ERROR") ||
+					strings.Contains(strings.ToUpper(aggregatedContext), "ACCESS DENIED") ||
+					strings.Contains(strings.ToLower(aggregatedContext), "permission required")
+
+				statusMsg := "[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Все шаги плана успешно выполнены субагентами. Подтверди завершение пользователю ОДНИМ кратким предложением."
+				if hasError {
+					statusMsg = fmt.Sprintf("[СИСТЕМНОЕ УВЕДОМЛЕНИЕ]: Некоторые шаги НЕ ВЫПОЛНЕНЫ из-за ошибок или отсутствия доступа. Результаты:\n%s\nТы ДОЛЖЕН сообщить пользователю о проблеме и запросить необходимые разрешения. НЕ ГОВОРИ, что всё успешно.", aggregatedContext)
+				}
+
+				// Notify the main agent
+				history = append(history, llm.Message{
+					Role:    llm.RoleUser,
+					Content: statusMsg,
+				})
+			}
 		}
 	}
 
@@ -260,6 +483,7 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 
 		// Execute tools
 		for _, tc := range resp.ToolCalls {
+			a.log.Debug("executing tool", "tool", tc.Name, "args", tc.Args)
 			start := time.Now()
 			toolResult, err := a.toolReg.Execute(ctx, tc.Name, msg.TransportName, msg.UserID, tc.Args)
 			elapsed := time.Since(start)
@@ -268,7 +492,7 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 				a.log.Error("tool error", "tool", tc.Name, "error", err, "elapsed", elapsed)
 				toolResult = fmt.Sprintf("Error: %v", err)
 			} else {
-				a.log.Debug("tool executed", "tool", tc.Name, "elapsed", elapsed)
+				a.log.Debug("tool executed", "tool", tc.Name, "result", toolResult, "elapsed", elapsed)
 			}
 
 			history = append(history, llm.Message{
@@ -293,7 +517,7 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 
 		reflected, err := a.config.LightModel.Generate(ctx, reflectHistory, nil, nil)
 		if err == nil && reflected.Content != "" {
-			a.log.Debug("reflection applied")
+			a.log.Debug("reflection applied", "raw_critique", reflected.Content)
 			finalResponse = reflected.Content
 			history = append(history, reflected)
 		}
@@ -302,10 +526,10 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 	// 5. Experience management
 	if a.config.OnTaskComplete != nil && a.config.OnTaskComplete(msg.Text, history) {
 		a.log.Info("experience management triggered", "task", msg.Text)
-		// The callback returned true — ask Heavy Model to formulate a skill
+		// Experience Management: Formulate skill instruction
 		expHistory := append(history, llm.Message{
 			Role:    llm.RoleUser,
-			Content: "Сформулируй пошаговую инструкцию по решению этой задачи и сохрани её через save_skill. Имя файла должно быть коротким и описательным.",
+			Content: "Сформулируй пошаговую инструкцию по решению этой задачи и сохрани её через save_skill. Имя файла должно быть коротким и описательным. [ВАЖНО]: В финальном ответе пользователю ТОЛЬКО подтверди, что навык сохранен, НЕ дублируй содержимое навыка в чат.",
 		})
 		resp, err := a.config.HeavyModel.Generate(ctx, expHistory, availableTools, nil)
 		if err == nil {
@@ -324,6 +548,7 @@ func (a *Agent) processMessage(ctx context.Context, msg transport.Message) error
 	// 7. Send response
 	outMsg := msg
 	outMsg.Text = finalResponse
+	a.log.Debug("outgoing message", "text", finalResponse)
 	return a.config.Transport.Write(outMsg)
 }
 

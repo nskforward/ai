@@ -12,4 +12,6 @@ type Storage interface {
 	Write(path string, data []byte) error
 	// List returns a list of file names in the given directory.
 	List(dir string) ([]string, error)
+	// Delete removes the file at the specified path.
+	Delete(path string) error
 }

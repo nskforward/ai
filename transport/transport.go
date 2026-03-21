@@ -16,4 +16,6 @@ type Transport interface {
 	Read() (Message, error)
 	// Write sends a response back to the user (using the context of the passed Message).
 	Write(msg Message) error
+	// SendTyping sends an activity indicator (e.g., "typing...") to the user.
+	SendTyping(sessionID string) error
 }

@@ -18,21 +18,25 @@ type SubAgent struct {
 	log      logger.Logger
 }
 
-// Execute runs a fresh ReAct loop for a targeted sub-task.
 func (sa *SubAgent) Execute(ctx context.Context, stepDescription string, priorContext string, transportName, userID string) (string, error) {
-	prompt := fmt.Sprintf(`Твоя задача — выполнить один конкретный шаг из большого плана.
-Шаг: %s
-
-Контекст от предыдущих шагов:
-%s
-
-Возвращай только финальный результат своей работы.`, stepDescription, priorContext)
+	availableTools := sa.tools.GetTools()
+	toolNames := make([]string, len(availableTools))
+	for i, t := range availableTools {
+		toolNames[i] = t.Name()
+	}
+	sa.log.Debug("subagent initialized", "tools", toolNames, "step", stepDescription)
 
 	history := []llm.Message{
-		{Role: llm.RoleSystem, Content: prompt},
+		{Role: llm.RoleSystem, Content: `Твоя задача — выполнить один конкретный шаг из большого плана.
+КРИТИЧЕСКИЕ ПРАВИЛА:
+1. ТЕБЕ ДОСТУПНЫ ИНСТРУМЕНТЫ: http_get, save_skill, read_file. ТЫ ОБЯЗАН ИХ ИСПОЛЬЗОВАТЬ для действий.
+2. Если шаг требует СОХРАНЕНИЯ опыта, ТЫ ОБЯЗАН вызвать save_skill с полезным КОДОМ и ИНСТРУКЦИЯМИ внутри.
+3. ТЫ ДОЛЖЕН СНАЧАЛА ПОПРОБОВАТЬ вызвать инструмент. Не предполагай заранее, что у тебя нет доступа. (Инструменты заданы технически, они ЕСТЬ).
+4. Если инструмент вернул успех, ТВОЙ ответ должен быть максимально кратким подтверждением.
+5. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО возвращать длинные блоки кода в финальном ответе, если ты уже сохранил их.
+Возвращай только финальный результат своей работы.`},
+		{Role: llm.RoleUser, Content: fmt.Sprintf("Шаг: %s\n\nКонтекст от предыдущих шагов:\n%s", stepDescription, priorContext)},
 	}
-
-	availableTools := sa.tools.GetTools()
 	var finalResponse string
 
 	for i := 0; i < sa.maxSteps; i++ {

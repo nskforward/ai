@@ -33,9 +33,10 @@ func (m *Manager) GenerateTOC() (string, error) {
 	builder.WriteString("Доступный опыт и навыки (список filename для read_file):\n")
 
 	for _, f := range files {
-		if strings.HasSuffix(f, ".md") {
+		l := strings.ToLower(f)
+		if strings.HasSuffix(l, ".md") || strings.HasSuffix(l, ".yaml") || strings.HasSuffix(l, ".yml") {
 			// For now we just list the filenames. 
-			// Later we might read the first line (Title) of each .md file.
+			// Later we might read the first line (Title) of each file.
 			builder.WriteString(fmt.Sprintf("- %s\n", f))
 		}
 	}
