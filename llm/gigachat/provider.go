@@ -129,8 +129,8 @@ type apiMessage struct {
 }
 
 type apiFuncCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Name      string      `json:"name"`
+	Arguments interface{} `json:"arguments"`
 }
 
 type apiFunction struct {
@@ -184,9 +184,16 @@ func (p *Provider) Generate(ctx context.Context, history []llm.Message, tools []
 		// If it was an assistant message that called a tool previously
 		if historyMsg.Role == llm.RoleAssistant && len(historyMsg.ToolCalls) > 0 {
 			tc := historyMsg.ToolCalls[0]
+			
+			var argsObj interface{}
+			// Try to decode JSON string to object because GigaChat might expect an object, not a string
+			if err := json.Unmarshal([]byte(tc.Args), &argsObj); err != nil {
+				argsObj = tc.Args // fallback to string
+			}
+
 			msg.FunctionCall = &apiFuncCall{
 				Name:      tc.Name,
-				Arguments: tc.Args,
+				Arguments: argsObj,
 			}
 			msg.Content = "" // Content can be empty when FunctionCall is present
 		}
@@ -273,15 +280,26 @@ func (p *Provider) Generate(ctx context.Context, history []llm.Message, tools []
 	}
 
 	if apiOut.FunctionCall != nil {
+		// Convert FunctionCall arguments (interface{}) back to a JSON string
+		var argsStr string
+		switch v := apiOut.FunctionCall.Arguments.(type) {
+		case string:
+			argsStr = v
+		default:
+			// It was parsed as map[string]interface{}
+			b, _ := json.Marshal(v)
+			argsStr = string(b)
+		}
+
 		// Is it our fake "structured output" function?
 		if apiOut.FunctionCall.Name == "return_structured_result" {
-			out.Content = apiOut.FunctionCall.Arguments
+			out.Content = argsStr
 		} else {
 			out.ToolCalls = []llm.ToolCall{
 				{
 					ID:   generateUUID(), // GigaChat doesn't return tool call IDs, auto-generate one
 					Name: apiOut.FunctionCall.Name,
-					Args: apiOut.FunctionCall.Arguments,
+					Args: argsStr,
 				},
 			}
 		}
