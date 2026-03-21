@@ -174,6 +174,14 @@ func (p *Provider) Generate(ctx context.Context, history []llm.Message, tools []
 		// If it's a tool output, GigaChat strictly requires role="function" and name.
 		if historyMsg.Role == llm.RoleTool {
 			msg.Role = "function"
+			
+			// GigaChat strictly expects function results to be valid JSON strings.
+			// If our tool returned plain text, wrap it in a JSON object.
+			if !json.Valid([]byte(msg.Content)) {
+				wrapped, _ := json.Marshal(map[string]string{"result": msg.Content})
+				msg.Content = string(wrapped)
+			}
+
 			// Find the function name from the previous assistant message by ToolCallID
 			for j := i - 1; j >= 0; j-- {
 				if history[j].Role == llm.RoleAssistant {
