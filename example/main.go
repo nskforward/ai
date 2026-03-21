@@ -35,30 +35,27 @@ func main() {
 	// 3. LLM Providers
 	var light, heavy llm.Provider
 	
-	if clientID := os.Getenv("GIGACHAT_CLIENT_ID"); clientID != "" {
+	if authKey := os.Getenv("GIGACHAT_AUTH_KEY"); authKey != "" {
 		fmt.Println("Используется реальная модель GigaChat")
 		
-		secret := os.Getenv("GIGACHAT_CLIENT_SECRET")
 		model := os.Getenv("GIGACHAT_MODEL")
 		if model == "" {
-			model = "GigaChat"
+			model = "GigaChat-2"
 		}
 		
 		light = gigachat.NewProvider(gigachat.Config{
-			ClientID:         clientID,
-			ClientSecret:     secret,
-			Model:            "GigaChat",       // For planning
+			AuthKey:          authKey,
+			Model:            "GigaChat-2",       // For planning
 			DisableSSLVerify: true,             // Bypass TLS for Mintsifra
 		})
 		
 		heavy = gigachat.NewProvider(gigachat.Config{
-			ClientID:         clientID,
-			ClientSecret:     secret,
+			AuthKey:          authKey,
 			Model:            model,            // For execution
 			DisableSSLVerify: true,
 		})
 	} else {
-		fmt.Println("Используются Mock-модели. Задайте GIGACHAT_CLIENT_ID для реального API.")
+		fmt.Println("Используются Mock-модели. Задайте GIGACHAT_AUTH_KEY для реального API.")
 		light = &llm.MockProvider{Name: "Light"}
 		heavy = &llm.MockProvider{Name: "Heavy"}
 	}

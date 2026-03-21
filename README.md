@@ -29,9 +29,8 @@ go get github.com/nskforward/ai
 # Токен бота, полученный у @BotFather в Telegram
 export TELEGRAM_BOT_TOKEN="ВАШ_TELEGRAM_ТОКЕН"
 
-# Учетные данные GigaChat (из личного кабинета)
-export GIGACHAT_CLIENT_ID="ВАШ_CLIENT_ID"
-export GIGACHAT_CLIENT_SECRET="ВАШ_CLIENT_SECRET"
+# Authorization Key от GigaChat (выдается в личном кабинете)
+export GIGACHAT_AUTH_KEY="ВАШ_GIGACHAT_АВТОРИЗАЦИОННЫЙ_КЛЮЧ"
 
 # Опционально: Ваш User ID в Telegram (через @userinfobot),
 # нужен для выдачи админ-прав (разрешает агенту сохранять опыт).
@@ -76,23 +75,21 @@ func main() {
 	}
 
 	// 3. Провайдеры LLM (Sber GigaChat)
-	// Для GigaChat мы передаём ClientID и ClientSecret; провайдер сам 
-	// сгенерирует Base64-токен и будет управлять циклами его обновления (OAuth).
+	// Для GigaChat мы передаём Authorization Key; провайдер сам 
+	// будет управлять циклами автообновления Access Token'ов (OAuth).
 	// DisableSSLVerify: true отключает проверку сертификатов Минцифры,
 	// которых по умолчанию нет в системе на Windows/macOS.
 	
 	// В качестве "легкой" модели для быстрых решений используем GigaChat-2
 	lightProvider := gigachat.NewProvider(gigachat.Config{
-		ClientID:         os.Getenv("GIGACHAT_CLIENT_ID"),
-		ClientSecret:     os.Getenv("GIGACHAT_CLIENT_SECRET"),
+		AuthKey:          os.Getenv("GIGACHAT_AUTH_KEY"),
 		Model:            "GigaChat-2", 
 		DisableSSLVerify: true,       
 	})
 
 	// В качестве "тяжелой" модели для сложной генерации кода используем GigaChat-2-Max
 	heavyProvider := gigachat.NewProvider(gigachat.Config{
-		ClientID:         os.Getenv("GIGACHAT_CLIENT_ID"),
-		ClientSecret:     os.Getenv("GIGACHAT_CLIENT_SECRET"),
+		AuthKey:          os.Getenv("GIGACHAT_AUTH_KEY"),
 		Model:            "GigaChat-2-Max", 
 		DisableSSLVerify: true,       
 	})
