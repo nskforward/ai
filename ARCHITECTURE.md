@@ -1,7 +1,7 @@
 # AI Agent Library - Architecture Document
 
-**Версия:** 1.0  
-**Дата:** 22 марта 2026  
+**Версия:** 1.1
+**Дата:** 23 марта 2026  
 **Статус:** Черновик (ожидает утверждения)
 
 ---
@@ -27,8 +27,8 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           Application Layer                             │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
-│  │   Telegram  │  │   Discord   │  │    HTTP     │  │    Other    │  │
-│  │  Transport  │  │  Transport  │  │  Transport  │  │  Transports │  │
+│  │  Console    │  │  Telegram   │  │   Discord   │  │    HTTP     │  │
+│  │  Transport  │  │  Transport  │  │  Transport  │  │  Transport  │  │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  │
 │         │                │                │                │          │
 │         └────────────────┴────────┬───────┴────────────────┘          │
@@ -93,7 +93,7 @@ type Transport interface {
     // Handle регистрирует обработчик сообщений
     Handle(handler MessageHandler)
     
-    // создает AgentContext для новой сессии
+    // createContext создаёт AgentContext для новой сессии
     createContext(msg *Message) *AgentContext
 }
 
@@ -137,9 +137,20 @@ type Message struct {
     RawData interface{}
 }
 
+// AttachmentType тип вложения
+type AttachmentType string
+
+const (
+    AttachmentTypeImage   AttachmentType = "image"
+    AttachmentTypeAudio   AttachmentType = "audio"
+    AttachmentTypeVideo   AttachmentType = "video"
+    AttachmentTypeFile    AttachmentType = "file"
+    AttachmentTypeText    AttachmentType = "text"
+)
+
 // Attachment представляет вложение
 type Attachment struct {
-    Type    string // "image", "audio", "video", "file"
+    Type    AttachmentType
     URL     string
     Content []byte
     Name    string
@@ -151,6 +162,9 @@ type Attachment struct {
 
 ```go
 // AgentContext содержит информацию о пользователе и сессии
+// Примечание: UserID и SessionID дублируются в Message для удобства,
+// но AgentContext используется для авторизации на уровне сессии,
+// rate limiting и хранения состояния между сообщениями
 type AgentContext struct {
     // UserID уникальный идентификатор пользователя
     UserID string
@@ -249,6 +263,23 @@ handler := chain.Then(agentHandler)
 #### Интерфейс Tool
 
 ```go
+// ApprovalPolicy политика подтверждения вызова инструмента
+type ApprovalPolicy string
+
+const (
+    // AutoApprove автоматическое подтверждение без запроса
+    AutoApprove ApprovalPolicy = "auto_approve"
+    
+    // RequireApproval требует подтверждения от пользователя
+    RequireApproval ApprovalPolicy = "require_approval"
+    
+    // RequireAdminApproval требует подтверждения от администратора
+    RequireAdminApproval ApprovalPolicy = "require_admin_approval"
+    
+    // Deny запрещено использование
+    Deny ApprovalPolicy = "deny"
+)
+
 // Tool определяет интерфейс инструмента
 type Tool interface {
     // Name возвращает имя инструмента
@@ -260,11 +291,15 @@ type Tool interface {
     // Parameters JSON Schema параметров
     Parameters() *jsonschema.Schema
     
-    // Execute выполняет инструмент
-    Execute(ctx context.Context, agentCtx *AgentContext, params map[string]interface{}) (*ToolResult, error)
+    // ResultSchema JSON Schema результата (опционально)
+    // Некоторые LLM (например, GigaChat) требуют схему результата
+    ResultSchema() *jsonschema.Schema
     
-    // RequireApproval требует ли подтверждения от админа
-    RequireApproval() bool
+    // Call выполняет инструмент (Tool Calling)
+    Call(ctx context.Context, agentCtx *AgentContext, params map[string]interface{}) (*ToolResult, error)
+    
+    // ApprovalPolicy возвращает политику подтверждения
+    ApprovalPolicy() ApprovalPolicy
     
     // IsAvailable проверяет доступность инструмента для пользователя
     IsAvailable(ctx context.Context, agentCtx *AgentContext) bool
@@ -289,6 +324,81 @@ type ToolResult struct {
     
     // ExecutionTime время выполнения
     ExecutionTime time.Duration
+}
+```
+
+#### Встроенные инструменты
+
+Библиотека включает набор встроенных инструментов с различными политиками подтверждения:
+
+`http_get` - HTTP GET запрос к URL (RequireApproval)
+`file_read` - Чтение файла (RequireApproval)
+`file_write` - Запись в файл (RequireAdminApproval)
+`folder_list` - Список файлов в папке (AutoApprove)
+`cli_exec` - Выполнение CLI команд (RequireAdminApproval)
+
+### Пример создания инструмента
+
+```go
+// EchoTool простой инструмент для демонстрации
+type EchoTool struct{}
+
+func (t *EchoTool) Name() string {
+    return "echo"
+}
+
+func (t *EchoTool) Description() string {
+    return "Повторяет переданный текст. Полезен для тестирования и отладки."
+}
+
+func (t *EchoTool) Parameters() *jsonschema.Schema {
+    return &jsonschema.Schema{
+        Type: "object",
+        Properties: map[string]*jsonschema.Schema{
+            "text": {
+                Type:        "string",
+                Description: "Текст для повторения",
+            },
+        },
+        Required: []string{"text"},
+    }
+}
+
+func (t *EchoTool) ResultSchema() *jsonschema.Schema {
+    return &jsonschema.Schema{
+        Type: "object",
+        Properties: map[string]*jsonschema.Schema{
+            "echoed_text": {
+                Type:        "string",
+                Description: "Повторённый текст",
+            },
+        },
+    }
+}
+
+func (t *EchoTool) Call(ctx context.Context, agentCtx *AgentContext, params map[string]interface{}) (*ToolResult, error) {
+    text, ok := params["text"].(string)
+    if !ok {
+        return &ToolResult{
+            Success: false,
+            Error:   "Параметр 'text' должен быть строкой",
+        }, nil
+    }
+    
+    return &ToolResult{
+        Success: true,
+        Output: map[string]interface{}{
+            "echoed_text": text,
+        },
+    }, nil
+}
+
+func (t *EchoTool) ApprovalPolicy() ApprovalPolicy {
+    return AutoApprove
+}
+
+func (t *EchoTool) IsAvailable(ctx context.Context, agentCtx *AgentContext) bool {
+    return true
 }
 ```
 
@@ -578,7 +688,7 @@ type Memory interface {
     GetSummary(ctx context.Context, sessionID string) (string, error)
     
     // Clear очищает историю сессии
-    Clear(ctx context.Context, sessionID error) error
+    Clear(ctx context.Context, sessionID string) error
     
     // GetContextWindow возвращает контекстное окно для LLM
     GetContextWindow(ctx context.Context, sessionID string) ([]Message, error)
@@ -663,36 +773,28 @@ const (
 #### 3.7.4 Budget Management
 
 ```go
-// BudgetManager управляет бюджетами токенов
-type BudgetManager interface {
-    // CheckBudget проверяет бюджет
-    CheckBudget(ctx context.Context, agentCtx *AgentContext) (*BudgetStatus, error)
+// ModelRouter маршрутизирует запросы по сложности
+type ModelRouter interface {
+    // Route определяет модель для запроса
+    Route(ctx context.Context, messages []Message) (string, error)
     
-    // Consume списывает токены
-    Consume(ctx context.Context, agentCtx *AgentContext, usage TokenUsage) error
-    
-    // SetBudget устанавливает бюджет
-    SetBudget(ctx context.Context, agentCtx *AgentContext, budget *Budget) error
-    
-    // GetBudget возвращает текущий бюджет
-    GetBudget(ctx context.Context, agentCtx *AgentContext) (*Budget, error)
+    // RegisterClassifier регистрирует классификатор
+    RegisterClassifier(classifier ComplexityClassifier)
 }
 
-// Budget бюджет пользователя
-type Budget struct {
-    TotalTokens     int
-    UsedTokens      int
-    ResetAt         time.Time
-    Tier            BudgetTier
+// ComplexityClassifier классифицирует сложность
+type ComplexityClassifier interface {
+    // Classify возвращает уровень сложности
+    Classify(ctx context.Context, messages []Message) (ComplexityLevel, error)
 }
 
-// BudgetTier уровень бюджета
-type BudgetTier string
+// ComplexityLevel уровень сложности
+type ComplexityLevel string
 
 const (
-    BudgetTierFree    BudgetTier = "free"
-    BudgetTierPremium BudgetTier = "premium"
-    BudgetTierEnterprise BudgetTier = "enterprise"
+    ComplexitySimple    ComplexityLevel = "simple"
+    ComplexityModerate  ComplexityLevel = "moderate"
+    ComplexityComplex   ComplexityLevel = "complex"
 )
 ```
 
@@ -703,7 +805,7 @@ const (
 #### Основные узлы
 
 ```go
-// Node определяет интерфейс узла workflow
+/// Node определяет интерфейс узла workflow
 type Node interface {
     // ID возвращает идентификатор узла
     ID() string
@@ -766,6 +868,7 @@ type WorkflowEnv struct {
 │   ├── transport.go    # Базовые интерфейсы
 │   ├── message.go      # Структура Message
 │   ├── context.go      # AgentContext
+│   ├── console/        # Console транспорт (для CLI)
 │   ├── telegram/       # Telegram транспорт
 │   ├── discord/        # Discord транспорт
 │   ├── http/           # HTTP/Webhook транспорт
@@ -793,7 +896,13 @@ type WorkflowEnv struct {
 │   ├── batch.go        # Batching
 │   ├── parallel.go     # Parallel execution
 │   ├── approval.go     # Система подтверждений
-│   └── rag.go          # Tool RAG
+│   ├── rag.go          # Tool RAG
+│   └── /built-in/      # Встроенные инструменты
+│       ├── http_get.go
+│       ├── file_read.go
+│       ├── file_write.go
+│       ├── folder_list.go
+│       └── cli_exec.go
 │
 ├── /llm                # LLM провайдеры
 │   ├── llm.go          # Базовый интерфейс
@@ -871,9 +980,13 @@ agent := agent.NewAgent(&agent.AgentConfig{
     Model:        "openai/gpt-4o",
 })
 
-// Регистрация инструментов
-agent.RegisterTool(&WeatherTool{})
-agent.RegisterTool(&CalculatorTool{})
+// Регистрация встроенных инструментов
+agent.RegisterTool(&builtin.HTTPGetTool{})
+agent.RegisterTool(&builtin.FileReadTool{})
+agent.RegisterTool(&builtin.FolderListTool{})
+
+// Регистрация пользовательского инструмента
+agent.RegisterTool(&EchoTool{})
 
 // Создание middleware цепочки
 chain := middleware.NewMiddlewareChain(
@@ -1021,12 +1134,15 @@ type AuditLog struct {
 - [x] AgentContext
 - [x] Middleware система
 - [x] Базовый Agent
+- [x] Console транспорт
+- [x] Telegram транспорт
 
 ### Фаза 2 (Tools & LLM)
-- [ ] Tool интерфейс
+- [ ] Tool интерфейс (Call, ApprovalPolicy, ResultSchema)
 - [ ] Tool Manager
 - [ ] OpenRouter провайдер
 - [ ] Tool Approval система
+- [ ] Встроенные инструменты (http_get, file_read, file_write, folder_list, cli_exec)
 
 ### Фаза 3 (Efficiency)
 - [ ] Prompt Caching
@@ -1063,8 +1179,12 @@ agent:
   temperature: 0.7
   max_tokens: 1000
   tools:
-    - name: weather
-      require_approval: true
+    - name: http_get
+      approval_policy: require_approval
+    - name: file_read
+      approval_policy: require_approval
+    - name: cli_exec
+      approval_policy: require_admin_approval
 ```
 
 ### 11.3 Через Environment Variables
