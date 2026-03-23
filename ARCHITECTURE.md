@@ -1145,10 +1145,10 @@ type AuditLog struct {
 - [x] Встроенные инструменты (http_get, file_read, file_write, folder_list, cli_exec)
 
 ### Фаза 3 (Efficiency)
-- [ ] Prompt Caching
-- [ ] Rolling Summarization
-- [ ] Model Routing
-- [ ] Budget Management
+- [x] Prompt Caching
+- [x] Rolling Summarization
+- [x] Model Routing
+- [x] Budget Management
 
 ### Фаза 4 (Advanced)
 - [ ] Workflow Engine
