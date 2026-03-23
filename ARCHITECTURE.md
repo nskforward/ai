@@ -1138,11 +1138,11 @@ type AuditLog struct {
 - [x] Telegram транспорт
 
 ### Фаза 2 (Tools & LLM)
-- [ ] Tool интерфейс (Call, ApprovalPolicy, ResultSchema)
-- [ ] Tool Manager
-- [ ] OpenRouter провайдер
-- [ ] Tool Approval система
-- [ ] Встроенные инструменты (http_get, file_read, file_write, folder_list, cli_exec)
+- [x] Tool интерфейс (Call, ApprovalPolicy, ResultSchema)
+- [x] Tool Manager
+- [x] OpenRouter провайдер
+- [x] Tool Approval система
+- [x] Встроенные инструменты (http_get, file_read, file_write, folder_list, cli_exec)
 
 ### Фаза 3 (Efficiency)
 - [ ] Prompt Caching

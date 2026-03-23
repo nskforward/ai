@@ -11,15 +11,31 @@ import (
 
 // ToolManager управляет инструментами
 type ToolManager struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	mu              sync.RWMutex
+	tools           map[string]Tool
+	approvalManager *ApprovalManager
 }
 
 // NewToolManager создаёт новый менеджер инструментов
 func NewToolManager() *ToolManager {
 	return &ToolManager{
-		tools: make(map[string]Tool),
+		tools:           make(map[string]Tool),
+		approvalManager: NewApprovalManager(),
 	}
+}
+
+// SetApprovalManager устанавливает менеджер подтверждений
+func (tm *ToolManager) SetApprovalManager(am *ApprovalManager) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.approvalManager = am
+}
+
+// GetApprovalManager возвращает менеджер подтверждений
+func (tm *ToolManager) GetApprovalManager() *ApprovalManager {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	return tm.approvalManager
 }
 
 // Register регистрирует инструмент
@@ -115,7 +131,22 @@ func (tm *ToolManager) Execute(ctx context.Context, agentCtx *transport.AgentCon
 		}, nil
 	}
 
-	// TODO: Implement approval flow for RequireApproval and RequireAdminApproval
+	// Запрашиваем подтверждение через ApprovalManager
+	if tm.approvalManager != nil {
+		approved, err := tm.approvalManager.RequestApproval(ctx, agentCtx, tool, params)
+		if err != nil {
+			return &ToolResult{
+				Success: false,
+				Error:   fmt.Sprintf("approval failed: %v", err),
+			}, nil
+		}
+		if !approved {
+			return &ToolResult{
+				Success: false,
+				Error:   fmt.Sprintf("tool %q execution was not approved", name),
+			}, nil
+		}
+	}
 
 	// Выполняем инструмент
 	return tool.Call(ctx, agentCtx, params)
